@@ -189,6 +189,24 @@ dies *silently* — a network partition or frozen host that never closes the
 connection — is noticed within seconds rather than waiting on the OS-default
 keepalive, letting the worker follow the Sentinel failover promptly.
 
+### Redis Outages
+
+A worker keeps running through Redis trouble. When Redis drops the connection,
+times out, or refuses a command (`NOREPLICAS` or `MISCONF` when it cannot
+persist, `READONLY` after a failover), the worker logs a warning, increments
+`docket_redis_disruptions`, lets its in-flight tasks finish, waits
+`reconnection_delay`, and reconnects. It repeats that for as long as the outage
+lasts and never exits because of Redis. A task whose acknowledgement failed
+during the outage stays pending and runs again after `redelivery_timeout`, the
+same at-least-once delivery you get when a worker crashes.
+
+This covers every error redis-py raises, including ones that will not clear on
+their own, such as a wrong password or host in the URL, or a key of the wrong
+type under the docket's prefix. Those show up as the same warning with a
+traceback on every retry, from the first poll onward, so alert on
+`docket_redis_disruptions` to catch them. Only an error from outside redis-py,
+a bug in docket or in a dependency, stops a running worker.
+
 ### Authentication
 
 Docket supports Redis authentication via URL credentials:
@@ -419,7 +437,7 @@ Available metrics include:
 - `docket_queue_depth` - Tasks ready for immediate execution
 - `docket_schedule_depth` - Tasks scheduled for future execution
 - `docket_tasks_running` - Currently executing tasks
-- `docket_redis_disruptions` - Redis connection failures
+- `docket_redis_disruptions` - Times Redis dropped, timed out, or refused a command that the worker then retried
 - `docket_strikes_in_effect` - Active strike rules
 
 All metrics include labels for docket name, worker name, and task function name.
